@@ -1,0 +1,117 @@
+name: Extract and verify standalone ZIP project
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "standalone/**"
+
+permissions:
+  contents: write
+
+jobs:
+  extract-verify-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Safely extract ZIP into standalone/
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path, PurePosixPath
+          import stat
+          import zipfile
+
+          archive = Path("ai_cyber_project.zip")
+          target = Path("standalone")
+          assert archive.is_file(), f"Missing archive: {archive}"
+          assert not target.exists(), "standalone/ already exists; refusing to overwrite it"
+
+          with zipfile.ZipFile(archive) as zf:
+              names = [i.filename for i in zf.infolist() if i.filename]
+              roots = [n.rsplit("/", 1)[0] for n in names if n.endswith("/run_gates.py")]
+              assert len(roots) == 1, f"Expected one run_gates.py in ZIP; found {roots}"
+              prefix = roots[0] + "/"
+              assert roots[0].count("/") == 0, f"Unexpected archive root: {roots[0]}"
+
+              temp = Path(".standalone-extract-tmp")
+              assert not temp.exists(), "Temporary extraction path already exists"
+              temp.mkdir()
+              try:
+                  for info in zf.infolist():
+                      name = info.filename
+                      if not name or name == roots[0] + "/":
+                          continue
+                      p = PurePosixPath(name)
+                      if p.is_absolute() or ".." in p.parts or "\\" in name:
+                          raise RuntimeError(f"Unsafe ZIP path: {name!r}")
+                      mode = info.external_attr >> 16
+                      if stat.S_ISLNK(mode):
+                          raise RuntimeError(f"Symlink entry not permitted: {name!r}")
+                      if not name.startswith(prefix):
+                          raise RuntimeError(f"Entry outside expected archive root: {name!r}")
+                      relative = name[len(prefix):]
+                      if not relative:
+                          continue
+                      out = temp.joinpath(*PurePosixPath(relative).parts)
+                      if info.is_dir():
+                          out.mkdir(parents=True, exist_ok=True)
+                      else:
+                          out.parent.mkdir(parents=True, exist_ok=True)
+                          with zf.open(info) as src, out.open("xb") as dst:
+                              dst.write(src.read())
+
+                  required = [
+                      "run_gates.py", "ai_cyber", "ai_cyber/legacy",
+                      "tests", "tests/__init__.py", "docs", "tools",
+                  ]
+                  for rel in required:
+                      assert (temp / rel).exists(), f"Required ZIP path missing: {rel}"
+                  for rel in ("ai_cyber", "tests", "docs", "tools"):
+                      assert (temp / rel).is_dir(), f"Expected directory: {rel}"
+                  (temp / "run_gates.py").is_file()
+                  assert (temp / "ai_cyber/legacy/split_manifest.json").is_file(), "Legacy split manifest missing"
+                  assert (temp / "ai_cyber/legacy/symbol_map.json").is_file(), "Legacy symbol map missing"
+
+                  temp.rename(target)
+              except Exception:
+                  import shutil
+                  shutil.rmtree(temp, ignore_errors=True)
+                  raise
+
+          print("ZIP extracted safely to standalone/ with the required relative layout.")
+          PY
+
+      - name: Compile standalone project
+        working-directory: standalone
+        run: python -m compileall -q ai_cyber tests run_gates.py
+
+      - name: Run standalone gates 0 through 10
+        working-directory: standalone
+        run: python run_gates.py
+
+      - name: Run complete standalone unittest discovery
+        working-directory: standalone
+        run: python -m unittest discover -s tests -t .
+
+      - name: Commit extracted standalone project
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add standalone
+          if git diff --cached --quiet; then
+            echo "standalone/ has no changes to commit."
+          else
+            git commit -m "Add verified standalone ZIP project layout"
+            git push origin HEAD:main
+          fi
