@@ -35,7 +35,6 @@ jobs:
           archive = Path("ai_cyber_project.zip")
           target = Path("standalone")
           assert archive.is_file(), f"Missing archive: {archive}"
-          assert not target.exists(), "standalone/ already exists; refusing to overwrite it"
 
           with zipfile.ZipFile(archive) as zf:
               names = [i.filename for i in zf.infolist() if i.filename]
@@ -83,7 +82,19 @@ jobs:
                   assert (temp / "ai_cyber/legacy/split_manifest.json").is_file(), "Legacy split manifest missing"
                   assert (temp / "ai_cyber/legacy/symbol_map.json").is_file(), "Legacy symbol map missing"
 
-                  temp.rename(target)
+                  import shutil
+                  backup = Path(".standalone-previous")
+                  assert not backup.exists(), "Temporary backup path already exists"
+                  if target.exists():
+                      target.rename(backup)
+                  try:
+                      temp.rename(target)
+                  except Exception:
+                      if backup.exists() and not target.exists():
+                          backup.rename(target)
+                      raise
+                  else:
+                      shutil.rmtree(backup, ignore_errors=True)
               except Exception:
                   import shutil
                   shutil.rmtree(temp, ignore_errors=True)
@@ -108,6 +119,7 @@ jobs:
         shell: bash
         run: |
           find standalone -type d -name __pycache__ -prune -exec rm -rf {} +
+          find standalone -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
           git fetch origin main
           git rebase origin/main
           git config user.name "github-actions[bot]"
