@@ -11,3 +11,5 @@ python -m unittest discover -s tests -t .
 ```
 
 The extraction workflow validates archive paths, preserves the package layout (`ai_cyber/`, `ai_cyber/legacy/`, `tests/`, `docs/`, and `tools/`), compiles the project, runs Gates 0–10, and runs complete unittest discovery before committing the extracted files. It does not overwrite the repository's root README or root tests.
+
+The extraction workflow is repeatable: it refreshes only `standalone/` from the ZIP, runs the gates first, and removes generated Python bytecode before committing. The repository-root `README.md` and any root-level tests are left untouched.
